@@ -1,0 +1,46 @@
+{
+    "training": {
+        "model": {
+            "name": "classification",
+            "merging_block": {
+                "name": "single",
+                "endpoint": "triplet"
+            }
+        },
+        "sampler": {
+            "name": "random_sampler",
+            "batch_size": 32,
+            "dataset": [
+                {
+                    "name": "market-1501",
+                    "source_file": "/home/pfeiffer/Projects/cupsizes/data/market1501_train.csv",
+                    "data_dir": "/fastwork/pfeiffer/Market-1501",
+                    "transform": {
+                        "height": 256,
+                        "width": 128,
+                        "transforms": ["resize", "RandomHorizontalFlip"]
+                    },
+                    "type": "reid"
+                }
+            ]
+        },
+        "losses": {
+            "type": "softmax",
+            "name": "softmax",
+            "endpoint" : "softmax",
+            "target": "pid"
+        },
+        "scheduler": {
+            "name": "multi_step",
+            "gamma": 0.1,
+            "lr": 0.00035,
+            "epochs": 80,
+            "milestones": [30, 55]
+        },
+        "optimizer": {
+            "name": "adam",
+            "weight_decay": 0.0005
+        },
+        "checkpoint_frequency": 40
+    }
+}

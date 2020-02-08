@@ -1,0 +1,88 @@
+
+{
+    "training": {
+        "model": {
+            "name": "pose",
+            "backbone":{
+                "name": "ResNet_GroupNorm",
+                "stride": 1,
+                "ncpg": 16,
+                "init_from_file": "/home/pfeiffer/Projects/master-triplet-reid-pytorch/pretrained/resnet50_groupnorm16.tar"
+            }
+        },
+        "sampler": {
+            "type": "random_sampler",
+            "batch_size": 32,
+            "dataset": [
+                {
+                    "name": "mpii",
+                    "source_file": "/globalwork/data/mpii/mpii_human_pose_v1_u12_1.mat",
+                    "data_dir": "/globalwork/data/mpii/",
+                    "dataset_fn": "mpii",
+                    "loader_fn": "cv2",
+                    "getitem_fn": "get_cropped_with_keypoints",
+                    "transform": {
+                        "affinewithcrop": {
+                            "translate_percent": [-0.2, 0.2],
+                            "rotate": [-30, 30],
+                            "scale":[0.75, 1.25]
+                        },
+                        "fliplrwithpairs": {"p": 0.5},
+                        "resize": {
+                            "width": 256,
+                            "height": 256
+                        },
+                        "normalization": {
+                            "mean": [0.485, 0.456, 0.406],
+                            "std" : [0.229, 0.224, 0.225]
+                        }
+
+                    },
+                    "type": "pose"
+                }
+            ]
+        },
+        "losses": {
+            "type": "l1",
+            "name": "l1",
+            "endpoint" : "pose",
+            "target": "coords",
+            "dataset": "all"
+        },
+        "scheduler": {
+            "preset": "huanghoujing",
+            "epochs": 100,
+            "t0": 70
+        },
+        "optimizer": {
+            "name": "adam"
+        },
+        "checkpoint_frequency": 10
+    },
+    "validation": {
+        "datasets": {
+            "name": "mpii",
+            "source_file": "/globalwork/data/mpii/mpii_human_pose_v1_u12_1.mat",
+            "data_dir": "/globalwork/data/mpii/",
+            "kwargs": {
+                "split": "val"
+            },
+            "dataset_fn": "mpii",
+            "loader_fn": "cv2",
+            "getitem_fn": "get_cropped_with_keypoints",
+            "transform": {
+                "cropfrombbox": {},
+                "resize": {
+                    "width": 256,
+                    "height": 256
+                },
+                "normalization": {
+                    "mean": [0.485, 0.456, 0.406],
+                    "std" : [0.229, 0.224, 0.225]
+                }
+            },
+            "type": "pose",
+            "batch_size": 10
+        }
+    }
+}

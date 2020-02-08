@@ -1,0 +1,79 @@
+{
+    "training": {
+        "model": {
+            "name": "semantic",
+            "backbone": {
+                "name": "fpn",
+                "init_from_file": "pretrained/resnet50_groupnorm16.tar",
+                "ncpg": 16,
+                "stride": 1,
+                "output_dim": 256
+            }
+        },
+        "dataloader": {
+            "sampler": {
+                "type": "random",
+                "dataset":{
+                    "name": "lip",
+                    "transform": {
+                        "affine": {
+                            "translate_percent": [-0.02, 0.02],
+                            "scale": [0.75, 1.25],
+                            "rotate": [-15, 15]
+                        },
+                        "resize": {
+                            "height": 256,
+                            "width": 256
+                        },
+                        "normalization": {
+                            "mean": [0.485, 0.456, 0.406],
+                            "std" : [0.229, 0.224, 0.225]
+                        }
+                    },
+                    "split": "train",
+                    "flip_prob": 0.5
+                },
+                "batch_size": 32
+            },
+            "num_workers": -1
+        },
+        "losses": {
+            "name": "bootstrappedcrossentropy",
+            "top_k_percent": 0.25,
+            "hard_mining_step": 5000,
+            "endpoint": "sem-logits",
+            "target": "seg",
+            "type": "bootstrappedcrossentropy"
+        },
+        "scheduler": {
+            "name": "multi_step",
+            "lr": 0.0001,
+            "milestones": [25, 35],
+            "gamma": 0.1
+        },
+        "optimizer": {
+            "name": "adam",
+            "weight_decay": 0.0001
+        },
+        "checkpoint_frequency": 5,
+        "epochs": 40
+    },
+    "validation": {
+        "sampler": {
+            "type": "sequential",
+            "dataset":{
+                "name": "lip",
+                "transform": {
+                    "normalization": {
+                        "mean": [0.485, 0.456, 0.406],
+                        "std" : [0.229, 0.224, 0.225]
+                    }
+                },
+                "split": "val",
+                "evaluate": "segmentation"
+            },
+            "batch_size": 1
+        },
+        "num_workers": 0
+    }
+}

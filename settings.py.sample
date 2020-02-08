@@ -1,0 +1,41 @@
+import os
+
+class Config(object):
+    DATA_BASE = "/globalwork/data"
+
+    MARKET_TRAIN = os.path.join(DATA_BASE, "market1501_annotations/market1501_train.csv")
+    MARKET_TEST = os.path.join(DATA_BASE, "market1501_annotations/market1501_test.csv")
+    MARKET_QUERY = os.path.join(DATA_BASE, "market1501_annotations/market1501_query.csv")
+    MARKET_DATA = os.path.join(DATA_BASE, "market1501")
+    MARKET_ATTRIBUTE = os.path.join(DATA_BASE, "market1501_attributes/market_attribute.mat")
+
+    DUKE_TRAIN = os.path.join(DATA_BASE, "DukeMTMC-reID/duke_mtmc_reid_train.csv")
+    DUKE_TEST = os.path.join(DATA_BASE, "DukeMTMC-reID/duke_mtmc_reid_test.csv")
+    DUKE_QUERY = os.path.join(DATA_BASE, "DukeMTMC-reID/duke_mtmc_reid_query.csv")
+    DUKE_DATA = os.path.join(DATA_BASE, "DukeMTMC-reID")
+    DUKE_ATTRIBUTE = os.path.join(DATA_BASE, "DukeMTMC-reID/duke_attribute.mat")
+
+    MPII_SOURCE = os.path.join(DATA_BASE, 'mpii/mpii_human_pose_v1_u12_1.mat')
+    MPII_DATA = os.path.join(DATA_BASE, 'mpii')
+
+    LIP_DATA = os.path.join(DATA_BASE, "LIP")
+
+    COCO_STUFF_DATA = "/globalwork/weber/COCO"
+    COCO_STUFF_SOURCE_TRAIN = "/globalwork/weber/COCO/annotations/stuff_train2017.json"
+    COCO_STUFF_SOURCE_VAL = "/globalwork/weber/COCO/annotations/stuff_val2017.json"
+
+    COCO_PANOPTIC_DATA = "/globalwork/weber/COCO"
+    COCO_PANOPTIC_SOURCE_TRAIN = "/globalwork/weber/COCO/annotations/panoptic_train2017.json"
+    COCO_PANOPTIC_SOURCE_VAL = "/globalwork/weber/COCO/annotations/panoptic_val2017.json"
+    COCO_PANOPTIC_CATEGORIES = "/globalwork/weber/COCO/annotations/panoptic_coco_categories.json"
+
+
+    LOG_DIR = "./experiments/"
+
+    MONGO_USER = ""
+    MONGO_PW = ""
+    MONGO_URL = "localhost:27017"
+    MONGO_DB_NAME = "master"
+
+    SLACK_WEBHOOK_URL = ""
+

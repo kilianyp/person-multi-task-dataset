@@ -1,0 +1,55 @@
+{
+    "training": {
+        "model": {
+            "name": "attribute",
+            "attributes": {
+                "gender": 2,
+                "top": 2,
+                "boots": 2,
+                "hat": 2,
+                "backpack": 2,
+                "bag": 2,
+                "handbag": 2,
+                "shoes": 2,
+                "upcolor": 8,
+                "downcolor": 7
+            }
+        },
+        "sampler": {
+            "name": "pk_sampler",
+            "P": 18,
+            "dataset": [
+                {
+                    "name": "duke",
+                    "attribute": {
+                        "source_file": "/home/pfeiffer/Projects/DukeMTMC-attribute/duke_attribute.mat",
+                        "dataset_fn": "make_duke_attribute",
+                        "kwargs":{"split": "train"}
+                    },
+                    "reid": {
+                        "source_file": "/home/pfeiffer/Projects/cupsizes/data/duke_mtmc_reid_train.csv",
+                        "data_dir": "/work/pfeiffer/datasets/DukeMTMC-reID/",
+                        "transform": {
+                            "height": 256,
+                            "width": 128,
+                            "transforms": ["resize", "RandomHorizontalFlip"]
+                        }
+                    },
+                    "type": "attribute_reid"
+                }
+            ]
+        },
+        "losses": {
+                "name": "attribute",
+                "endpoint" : ["gender", "top", "boots", "hat", "backpack", "bag", "handbag", "shoes", "upcolor", "downcolor"],
+                "weight": 1.0,
+                "dataset": "all"
+        },
+        "scheduler": {
+            "preset": "huanghoujing"
+        },
+        "optimizer": {
+            "name": "adam"
+        }
+    }
+}
