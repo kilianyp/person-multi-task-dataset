@@ -21,6 +21,17 @@ The following papers are (partially) included:
 - "Learning Discriminative Features with Multiple Granularities for Person Re-Identification" [Link](https://arxiv.org/abs/1804.01438)
 - "Multi-Task Learning as Multi-Objective Optimization" [Link](http://papers.nips.cc/paper/7334-multi-task-learning-as-multi-objective-optimization)
 
+Videos are from training sequences of the [MOT17](https://motchallenge.net/data/MOT17/) challenge:
+- [02](https://drive.google.com/open?id=1nq1KLH0X5j26YaLCjQOFQ8x_KydonVds)
+- [05](https://drive.google.com/open?id=1E22xH5TWhmKyj_kosb-r-16WQcWJkzCW)
+- [09](https://drive.google.com/open?id=1TNsgqN4QWHw2-m6TmgtboAi4Lw_RPTCL)
+- [10](https://drive.google.com/open?id=1J2mzWhUu6EcotEqW_C9OlXmFkZoUTDo-)
+- [11](https://drive.google.com/open?id=1iysZ0LHzagVynx6etS8SOkZsxPoZ44b1)
+
+Shown model used ResNet-50 backbone. On a 1080 GTX, ~120 cropped images per second could be processed.
+
+NOTE: Ground truth bounding boxes were used. Bounding box color indicate gender. 
+
 # Usage
 ***Code needs clean-up and is provided as is. If there's a general interest, I will look into making things cleaner***
 
