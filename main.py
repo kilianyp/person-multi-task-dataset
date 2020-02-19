@@ -1,323 +1,446 @@
-'''
-The imagenet training an evaluation program. This file is copied from
-torchvision.
-'''
-
-import argparse
+import sys
 import os
-import shutil
 import time
+import json
+from settings import Config
 
+path = os.path.abspath('./sacred')
+sys.path = [path] + sys.path
 import torch
-import torch.nn as nn
-import torch.nn.parallel
-import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.optim
-import torch.utils.data
-import torch.utils.data.distributed
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
-import resnet as models
+from builders import (scheduler_builder, dataloader_builder,
+                      model_builder, optimizer_builder, loss_builder,
+                      config_builder)
+import logger as log
+from logger import report_after_batch, report_after_epoch, report_after_training
+from sacred.observers import SlackObserver, FileStorageObserver, MongoObserver
+from sacred import Experiment
+from argparse import ArgumentParser
+from utils import ExitHandler
+import utils
 
 
-model_names = sorted(name for name in models.__dict__
-    if name.islower() and not name.startswith("__")
-    and callable(models.__dict__[name]))
+def set_device(config):
+    device_id = config['device_id']
 
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('data', metavar='DIR',
-                    help='path to dataset')
-parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet18',
-                    choices=model_names,
-                    help='model architecture: ' +
-                        ' | '.join(model_names) +
-                        ' (default: resnet18)')
-parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
-                    help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=90, type=int, metavar='N',
-                    help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
-                    help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
-                    metavar='N', help='mini-batch size (default: 256)')
-parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
-                    metavar='LR', help='initial learning rate')
-parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
-                    help='momentum')
-parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
-                    metavar='W', help='weight decay (default: 1e-4)')
-parser.add_argument('--print-freq', '-p', default=10, type=int,
-                    metavar='N', help='print frequency (default: 10)')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
-                    help='evaluate model on validation set')
-parser.add_argument('--pretrained', dest='pretrained', action='store_true',
-                    help='use pre-trained model')
-parser.add_argument('--world-size', default=1, type=int,
-                    help='number of distributed processes')
-parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
-                    help='url used to set up distributed training')
-parser.add_argument('--dist-backend', default='gloo', type=str,
-                    help='distributed backend')
-parser.add_argument('--group-norm', default=0, type=int,
-                    help='number of channels per group. If it is 0, it means '
-                    'batch norm instead of group-norm')
-
-best_prec1 = 0
-
-
-def main():
-    global args, best_prec1
-    args = parser.parse_args()
-
-    args.distributed = args.world_size > 1
-
-    if args.distributed:
-        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                world_size=args.world_size)
-
-    # create model
-    if args.pretrained:
-        print("=> using pre-trained model '{}'".format(args.arch))
-        model = models.__dict__[args.arch](pretrained=True,
-                                           group_norm=args.group_norm)
-    else:
-        print("=> creating model '{}'".format(args.arch))
-        model = models.__dict__[args.arch](group_norm=args.group_norm)
-
-    if not args.distributed:
-        if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
-            model.features = torch.nn.DataParallel(model.features)
-            model.cuda()
+    if not device_id == 'cpu' and torch.cuda.is_available():
+        if device_id is None:
+            device = torch.device('cuda')
         else:
-            model = torch.nn.DataParallel(model).cuda()
+            if isinstance(device_id, list):
+                device = torch.device('cuda:{}'.format(device_id[0]))
+            else:
+                device = torch.device('cuda:{}'.format(device_id))
+
+        torch.cuda.init()
     else:
-        model.cuda()
-        model = torch.nn.parallel.DistributedDataParallel(model)
+        device = torch.device('cpu')
+        # make compatible with torch dataparallel
+        # TODO does not work with data parallel
+        config['device_id'] = []
+    config['device'] = device
 
-    # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss().cuda()
 
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+def main(_run):
+    # initialize logger after observers are appended
+    log.initialize(_run)
+    cfg = _run.config
+    set_device(cfg)
+    train_cfg = cfg['training']
+    validation_cfg = cfg.get('validation')
+    checkpoint_frequency = train_cfg['checkpoint_frequency']
+    restore_checkpoint_cfg = train_cfg['restore_checkpoint']
+    max_epochs = train_cfg['epochs']
+    model_files = run_train(train_cfg['dataloader'], train_cfg['model'], train_cfg['scheduler'],
+                            train_cfg['optimizer'], train_cfg['losses'], validation_cfg,
+                            checkpoint_frequency, restore_checkpoint_cfg, max_epochs,
+                            _run)
+    if 'test' in cfg:
+        test_dataset_cfg = cfg['test']
+        score = evaluate_checkpoint_on(test_dataset_cfg, model_files[-1])
+        log_result(score, _run)
+        return format_result(score)
+    else:
+        return True
 
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
-            best_prec1 = checkpoint['best_prec1']
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
+
+def run_train(dataloader_cfg, model_cfg, scheduler_cfg,
+        optimizer_cfg, loss_cfg, validation_cfg, checkpoint_frequency,
+        restore_checkpoint, max_epochs, _run):
+
+    # Lets cuDNN benchmark conv implementations and choose the fastest.
+    # Only good if sizes stay the same within the main loop!
+    torch.backends.cudnn.benchmark = True
+    exit_handler = ExitHandler()
+
+    device = _run.config['device']
+    device_id = _run.config['device_id']
+
+    # during training just one dataloader
+    dataloader = dataloader_builder.build(dataloader_cfg)[0]
+
+    epoch = 0
+    if restore_checkpoint is not None:
+        model_cfg, optimizer_cfg, epoch = utils.restore_checkpoint(restore_checkpoint, model_cfg, optimizer_cfg)
+
+    def overwrite(to_overwrite, dic):
+        to_overwrite.update(dic)
+        return to_overwrite
+
+    # some models depend on dataset, for example num_joints
+    model_cfg = overwrite(dataloader.dataset.info, model_cfg)
+    model = model_builder.build(model_cfg)
+
+    loss_cfg['model'] = model
+    loss = loss_builder.build(loss_cfg)
+    loss = loss.to(device)
+
+    parameters = list(model.parameters()) + list(loss.parameters())
+    optimizer = optimizer_builder.build(optimizer_cfg, parameters)
+
+    lr_scheduler = scheduler_builder.build(scheduler_cfg, optimizer, epoch)
+
+    if validation_cfg is None:
+        validation_dataloaders = None
+    else:
+        validation_dataloaders = dataloader_builder.build(validation_cfg)
+        keep = False
+
+    file_logger = log.get_file_logger()
+    logger = log.get_logger()
+
+
+    model = torch.nn.DataParallel(model, device_ids=device_id)
+    model.cuda()
+
+    model = model.train()
+    trained_models = []
+
+    exit_handler.register(file_logger.save_checkpoint,
+                          model, optimizer, "atexit",
+                          model_cfg)
+
+    start_training_time = time.time()
+    end = time.time()
+    while epoch < max_epochs:
+        epoch += 1
+        lr_scheduler.step()
+        logger.info("Starting Epoch %d/%d", epoch, max_epochs)
+        len_batch = len(dataloader)
+        acc_time = 0
+        for batch_id, data in enumerate(dataloader):
+            optimizer.zero_grad()
+            endpoints = model(data, model.module.endpoints)
+            logger.debug("datasets %s", list(data['split_info'].keys()))
+
+            data.update(endpoints)
+            # threoretically losses could also be caluclated distributed.
+            losses = loss(endpoints, data)
+            loss_mean = torch.mean(losses)
+            loss_mean.backward()
+            optimizer.step()
+
+            acc_time += time.time() - end
+            end = time.time()
+
+            report_after_batch(_run=_run, logger=logger, batch_id=batch_id, batch_len=len_batch,
+                               acc_time=acc_time, loss_mean=loss_mean, max_mem=torch.cuda.max_memory_allocated())
+
+        if epoch % checkpoint_frequency == 0:
+            path = file_logger.save_checkpoint(model, optimizer, epoch, model_cfg)
+            trained_models.append(path)
+
+        report_after_epoch(_run=_run, epoch=epoch, max_epoch=max_epochs)
+
+        if validation_dataloaders is not None and \
+                epoch % checkpoint_frequency == 0:
+            model.eval()
+
+            # Lets cuDNN benchmark conv implementations and choose the fastest.
+            # Only good if sizes stay the same within the main loop!
+            # not the case for segmentation
+            torch.backends.cudnn.benchmark = False
+            score = evaluate(validation_dataloaders, model, epoch, keep=keep)
+            logger.info(score)
+            log_score(score, _run, prefix="val_", step=epoch)
+            torch.backends.cudnn.benchmark = True
+            model.train()
+
+    report_after_training(_run=_run, max_epoch=max_epochs, total_time=time.time() - start_training_time)
+    path = file_logger.save_checkpoint(model, optimizer, epoch, model_cfg)
+    if path:
+        trained_models.append(path)
+    file_logger.close()
+    # TODO get best performing val model
+    evaluate_last = _run.config['training'].get('evaluate_last', 1)
+    if len(trained_models) < evaluate_last:
+        logger.info("Only saved %d models (evaluate_last=%d)", len(trained_models), evaluate_last)
+    return trained_models[-evaluate_last:]
+
+
+def evaluate_checkpoint(_run):
+    log.initialize(_run)
+    cfg = _run.config
+    set_device(cfg)
+    validation_cfg = cfg['validation']
+    restore_checkpoint_cfg = cfg['restore_checkpoint']
+    model_update_cfg = cfg.get('model', {})
+    scores = evaluate_checkpoint_on(restore_checkpoint_cfg, validation_cfg, _run, model_update_cfg)
+    log_score(scores, _run, "val_")
+    return format_result(scores)
+
+
+def evaluate_checkpoint_on(restore_checkpoint, dataset_cfg, _run, model_update_cfg={}):
+    model_cfg, _, epoch = utils.restore_checkpoint(restore_checkpoint, model_cfg=model_update_cfg, map_location='cpu')
+    #model_cfg['backbone']['output_dim'] = 256
+    dataloaders = dataloader_builder.build(dataset_cfg)
+    model = model_builder.build(model_cfg)
+    # TODO needs to be from dataset
+    if 'seg_class_mapping' in model_cfg:
+        mapping = model_cfg['seg_class_mapping']
+    else:
+        mapping = None
+
+    model.seg_mapping = mapping
+
+    model = torch.nn.DataParallel(model, device_ids=_run.config['device_id'])
+    model = model.cuda()
+    return evaluate(dataloaders, model, epoch, keep=True)
+
+
+def evaluate(dataloaders, model, epoch, keep=False):
+    import utils
+    import shutil
+    scores = {}
+    model = model.eval()
+    file_logger = log.get_file_logger()
+    path_prefix = os.path.join(file_logger.get_log_dir(), 'results')
+    for dataloader in dataloaders:
+        dataset = dataloader.dataset
+        # this is a change in design, 
+        # dataset creates evaluation
+        evaluation = dataset.get_evaluation(model)
+        print(evaluation.name)
+        folder_name = os.path.join(path_prefix, str(epoch))
+        utils.create_dir_recursive(folder_name)
+        # evaluation creates writer
+        with evaluation.get_writer(folder_name) as writer:
+            for idx, data in enumerate(dataloader):
+                data = evaluation.before_infere(data)
+                endpoints = model.module.infere(data)
+                data_to_write = evaluation.before_saving(endpoints, data)
+                writer.write(**data_to_write)
+                print("\rDone (%d/%d)" % (idx, len(dataloader)), flush=True, end='')
+
+        score = evaluation.score()
+        if evaluation.name in scores:
+            scores[evaluation.name].update(score)
         else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
-
-    cudnn.benchmark = True
-
-    # Data loading code
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val2')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    else:
-        train_sampler = None
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, pin_memory=True, sampler=train_sampler)
-
-    val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ])),
-        batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
-
-    if args.evaluate:
-        validate(val_loader, model, criterion)
-        return
-
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
-        adjust_learning_rate(optimizer, epoch)
-
-        # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch)
-
-        # evaluate on validation set
-        prec1 = validate(val_loader, model, criterion)
-
-        # remember best prec@1 and save checkpoint
-        is_best = prec1 > best_prec1
-        best_prec1 = max(prec1, best_prec1)
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'arch': args.arch,
-            'state_dict': model.state_dict(),
-            'best_prec1': best_prec1,
-            'optimizer' : optimizer.state_dict(),
-        }, is_best, filename='weights/{}_checkpoint.tar'.format(args.arch))
+            scores[evaluation.name] = score
+        print(score)
 
 
-def train(train_loader, model, criterion, optimizer, epoch):
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
+    if not keep:
+        logger = log.get_logger()
+        logger.warning("deleting evaluation files in %s", path_prefix)
+        shutil.rmtree(path_prefix)
 
-    # switch to train mode
-    model.train()
+    return scores
 
-    end = time.time()
-    for i, (input, target) in enumerate(train_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
-
-        target = target.cuda(async=True)
-
-        # compute output
-        output = model(input)
-        loss = criterion(output, target)
-
-        # measure accuracy and record loss
-        prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.item(), input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
-
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        if i % args.print_freq == 0:
-            print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                   epoch, i, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses, top1=top1, top5=top5))
+def test(dataloaders, model, epoch):
+    import utils
+    model = model.eval()
+    file_logger = log.get_file_logger()
+    path_prefix = os.path.join(file_logger.get_log_dir(), 'results')
+    for dataloader in dataloaders:
+        dataset = dataloader.dataset
+        # this is a change in design, 
+        # dataset creates evaluation
+        test_set = dataset.get_test(model)
+        folder_name = os.path.join(path_prefix, str(epoch))
+        utils.create_dir_recursive(folder_name)
+        # evaluation creates writer
+        for idx, data in enumerate(dataloader):
+            test_set.write(data)
+            print("\rDone (%d/%d)" % (idx, len(dataloader)), flush=True, end='')
 
 
-def validate(val_loader, model, criterion):
-    batch_time = AverageMeter()
-    losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
 
-    # switch to evaluate mode
-    model.eval()
-
-    end = time.time()
-    for i, (input, target) in enumerate(val_loader):
-        target = target.cuda(async=True)
-
-        # compute output
-        with torch.no_grad():
-            output = model(input)
-            loss = criterion(output, target)
-
-        # measure accuracy and record loss
-        prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.item(), input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
-
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        if i % args.print_freq == 0:
-            print('Test: [{0}/{1}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                   i, len(val_loader), batch_time=batch_time, loss=losses,
-                   top1=top1, top5=top5))
-
-    print(' * Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f}'
-          .format(top1=top1, top5=top5))
-
-    return top1.avg
-
-
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename)
-    if is_best:
-        best_file = filename.replace('.tar', '_best.tar')
-        shutil.copyfile(filename, best_file)
-
-
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
+def test_config(_run):
+    pass
+    # logger = log.get_logger()
+    # cfg = _run.config
+    # set_device(cfg)
+    # train_cfg = cfg['training']
+    # checkpoint_frequency = train_cfg['checkpoint_frequency']
+    # restore_checkpoint_cfg = train_cfg['restore_checkpoint']
+    #
+    # dataloader_cfg = train_cfg['dataloader']
+    # model_cfg = train_cfg['model']
+    # scheduler_cfg = train_cfg['scheduler']
+    # optimizer_cfg = train_cfg['optimizer']
+    # loss_cfg = train_cfg['losses']
+    #
+    # device = _run.config['device']
+    # device_id = _run.config['device_id']
+    #
+    # dataloader = dataloader_builder.build(dataloader_cfg)
+    #
+    # model_cfg_appendix, optimizer_cfg_appendix, epoch, _ = restore_checkpoint(restore_checkpoint_cfg)
+    # model_cfg.update(model_cfg_appendix)
+    # optimizer_cfg.update(optimizer_cfg_appendix)
+    #
+    # def overwrite(to_overwrite, dic):
+    #     to_overwrite.update(dic)
+    #     return to_overwrite
+    #
+    # model_cfg = overwrite(dataloader.dataset.info, model_cfg)
+    # model = model_builder.build(model_cfg)
+    #
+    # loss = loss_builder.build(loss_cfg)
+    #
+    # parameters = list(model.parameters()) + list(loss.parameters())
+    # optimizer = optimizer_builder.build(optimizer_cfg, parameters)
+    #
+    #
+    # validation_cfg = cfg.get('validation')
+    # if validation_cfg is None:
+    #     validation_dataloaders = None
+    #     logger.warning("No validation given")
+    # else:
+    #     validation_dataloaders = dataloader_builder.build(validation_cfg)
+    #
+    # if 'evaluation' in cfg:
+    #     evaluation_cfg = cfg['evaluation']
+    #     dataloaders, model_cfgs = evaluation_builder.build(evaluation_cfg)
+    #     delete = evaluation_cfg['delete']
+    # else:
+    #     logger.warning("No evaluation given")
+    #
+    # logger.info("Success")
 
 
-def adjust_learning_rate(optimizer, epoch):
-    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = args.lr * (0.1 ** (epoch // 30))
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+def evaluate_experiment(_run):
+    log.initialize(_run)
+    new_cfg = _run.config
+    set_device(new_cfg)
+    experiment = new_cfg['experiment']
+    # quick fix for last saved model
+    num_models = new_cfg.get('last_x', 1)
+    model_paths = log.Logger.get_all_model_paths(experiment)
+    model_paths = model_paths[-num_models:]
+
+    cfg_path = log.Logger.get_cfg_path(experiment)
+    with open(cfg_path, 'r') as f:
+        cfg = json.load(f)
+
+    # overwrite cfg
+    # WARNING this means we are using a config that has not been
+    # filled with default values
+    cfg.update(new_cfg)
+    set_device(cfg)
+    # TODO
+    for model_path in model_paths:
+        score = evaluate_checkpoint_on(model_path, new_cfg['validation'], _run)
+        log_score(score, _run)
+        print(format_result(score))
+    return True
 
 
-def accuracy(output, target, topk=(1,)):
-    """Computes the precision@k for the specified values of k"""
-    maxk = max(topk)
-    batch_size = target.size(0)
-
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-        res.append(correct_k.mul_(100.0 / batch_size))
-    return res
+def show_options():
+    from models import get_all_models
+    from samplers import get_all_multi_samplers, get_all_single_samplers
+    print("models")
+    print((',\n').join(get_all_models()))
+    print("single samplers")
+    print((',\n').join(get_all_single_samplers()))
+    print("multi samplers")
+    print((',\n').join(get_all_multi_samplers()))
 
 
-if __name__ == '__main__':
-    main()
+def format_result(result):
+    formatted = "Results:\n"
+    metrics = {}
+    for eval_name, score in result.items():
+        for metric, value in score.items():
+            metric_name = "{} @{}".format(metric, eval_name)
+            if metric_name in metrics:
+                metrics[metric_name].append(value)
+            else:
+                metrics[metric_name] = [value]
+
+    for metric_name, values in metrics.items():
+        try:
+            formatted += "{}: {}\n".format(metric_name, ','.join(list(values)))
+        except:
+            formatted += "{}: {}\n".format(metric_name, str(values))
+    return formatted
+
+
+def log_result(results, _run):
+    for model, scores in results.items():
+        for eval_name, score in scores.items():
+            for metric, value in score.items():
+                metric_name = "{} @{}".format(metric, eval_name)
+                _run.log_scalar(metric_name, value)
+
+
+def log_score(scores, _run, prefix="", step=None):
+    for eval_name, score in scores.items():
+        for metric, value in score.items():
+            metric_name = prefix + "{} @{}".format(metric, eval_name)
+            _run.log_scalar(metric_name, value, step)
+
+
+def create_base_experiment(sacred_args, name=None): #path=Config.LOG_DIR, db_name=Config.DB_NAME):
+    ex = Experiment(name)
+    print(name)
+    ex.capture(set_device)
+    ex.main(main)
+    ex.capture(run_train)
+    ex.command(evaluate_experiment)
+    ex.command(test_config)
+    ex.command(show_options)
+    ex.command(evaluate_checkpoint)
+
+    # set default values
+    ex = config_builder.build(ex)
+
+    # set observers but check if maybe sacred will create them
+    # on its own
+    """ TODO
+    Problem is that we create the experiment before the command line is parsed by sacred.
+    But then we cannot set default values without using a shell script. Or
+    modify the file path for the logger."""
+
+    if Config.LOG_DIR is not None and '-F' not in sacred_args:
+        path = Config.LOG_DIR
+        if name is not None:
+            path = os.path.join(path, name)
+        file_ob = FileStorageObserver.create(path)
+        ex.observers.append(file_ob)
+
+    if Config.SLACK_WEBHOOK_URL != "":
+        slack_ob = SlackObserver(Config.SLACK_WEBHOOK_URL)
+        ex.observers.append(slack_ob)
+
+
+    if (Config.MONGO_DB_NAME is not None and Config.MONGO_DB_NAME != "") \
+            and '-m' not in sacred_args:
+        if Config.MONGO_USER != "":
+            mongo_ob = MongoObserver.create(username=Config.MONGO_USER, password=Config.MONGO_PW,
+                                            url=Config.MONGO_URL, authMechanism="SCRAM-SHA-256", db_name=Config.MONGO_DB_NAME)
+        else:
+            mongo_ob = MongoObserver.create(url=Config.MONGO_URL, db_name=Config.MONGO_DB_NAME)
+        ex.observers.append(mongo_ob)
+
+    return ex
+
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    # the name is set in run information
+    parser.add_argument('-n', default=None)
+    args, unknown_args = parser.parse_known_args()
+
+    ex = create_base_experiment(unknown_args, name=args.n)
+    ex.run_commandline()
