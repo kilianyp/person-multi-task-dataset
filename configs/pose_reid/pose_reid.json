@@ -1,0 +1,131 @@
+{
+    "training": {
+        "model": {
+            "name": "pose_reid",
+            "backbone": {
+                "name": "resnet_groupnorm",
+                "ncpg": 16,
+                "stride": 1,
+                "init_from_file": "/home/pfeiffer/Projects/master-triplet-reid-pytorch/pretrained/resnet50_groupnorm16.tar"
+            },
+            "split": false,
+            "single_head": true
+        },
+        "sampler": {
+            "type": "random_sampler_length_weighted",
+            "samplers": {
+                "mpii_sampler": {
+                    "type": "random_sampler",
+                    "batch_size": 32,
+                    "dataset": [{
+                            "name": "mpii",
+                            "source_file": "/work/pfeiffer/datasets/mpii/mpii_human_pose_v1_u12_1.mat",
+                            "data_dir": "/fastwork/pfeiffer/mpii/",
+                            "dataset_fn": "mpii",
+                            "loader_fn": "cv2",
+                            "getitem_fn": "get_cropped_with_keypoints",
+                            "transform": {
+                                "affinewithcrop": {
+                                    "translate_percent": [-0.2, 0.2],
+                                    "rotate": [-30, 30],
+                                    "scale":[0.75, 1.25]
+                                },
+                                "fliplrwithpairs": {"p": 0.5},
+                                "resize": {
+                                    "width": 256,
+                                    "height": 256
+                                },
+                                "normalization": {
+                                    "mean": [0.485, 0.456, 0.406],
+                                    "std" : [0.229, 0.224, 0.225]
+                                }
+                            },
+                            "type": "pose"
+                        }
+                    ]
+                },
+                "market_sampler": {
+                    "type": "pk_sampler",
+                    "P": 18,
+                    "dataset": [
+                        {
+                            "name": "market-1501",
+                            "source_file": "/home/pfeiffer/Projects/cupsizes/data/market1501_train.csv",
+                            "data_dir": "/home/pfeiffer/Projects/triplet-reid-pytorch/data/Market-1501",
+                            "transform": {
+                                "fliplr": {"p": 0.5},
+                                "resize": {
+                                    "width": 128,
+                                    "height": 256
+                                },
+                                "normalization": {
+                                    "mean": [0.485, 0.456, 0.406],
+                                    "std" : [0.229, 0.224, 0.225]
+                                }
+                            },
+                            "type": "reid"
+                        }
+                    ]
+                }
+            }
+        },
+        "losses":{
+            "type": "LinearWeightedLoss",
+            "name": "Linear",
+            "losses": [
+                {
+                    "name": "l2",
+                    "type": "l2",
+                    "endpoint" : "pose",
+                    "target": "coords",
+                    "dataset": "mpii",
+                    "weight": 1.0,
+                },
+                {
+                    "name": "BatchHard",
+                    "type": "BatchHard",
+                    "endpoint" : "triplet",
+                    "weight": 1.0,
+                    "log_sig_sq": 0.0,
+                    "margin": "soft",
+                    "dataset": "market-1501"
+                }
+            ]
+        },
+        "scheduler": {
+            "preset": "huanghoujing",
+            "epochs": 100,
+            "t0": 70
+        },
+        "optimizer": {
+            "name": "adam"
+        },
+        "checkpoint_frequency": 10
+    },
+    "validation": {
+        "datasets": {
+            "name": "mpii",
+            "source_file": "/work/pfeiffer/datasets/mpii/mpii_human_pose_v1_u12_1.mat",
+            "data_dir": "/fastwork/pfeiffer/mpii/",
+            "kwargs": {
+                "split": "val"
+            },
+            "dataset_fn": "mpii",
+            "loader_fn": "cv2",
+            "getitem_fn": "get_cropped_with_keypoints",
+            "transform": {
+                "cropfrombbox": {},
+                "resize": {
+                    "width": 256,
+                    "height": 256
+                },
+                "normalization": {
+                    "mean": [0.485, 0.456, 0.406],
+                    "std" : [0.229, 0.224, 0.225]
+                }
+            },
+            "type": "pose",
+            "batch_size": 10
+        }
+    }
+}

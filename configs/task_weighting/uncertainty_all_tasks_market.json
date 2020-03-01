@@ -1,0 +1,83 @@
+
+{
+    "training": {
+        "model": {
+            "name": "MultiTaskNetwork",
+            "attributes": {
+                "gender": 2,
+                "hair": 2,
+                "up": 2,
+                "down": 2,
+                "clothes": 2,
+                "hat": 2,
+                "backpack": 2,
+                "bag": 2,
+                "handbag": 2,
+                "age": 4,
+                "upcolor": 8,
+                "downcolor": 9
+            }
+        },
+        "sampler": {
+            "name": "pk_sampler",
+            "P": 18,
+            "dataset": [
+                {
+                    "name": "market-1501",
+                    "attribute": {
+                        "source_file": "/home/pfeiffer/Projects/triplet-reid-pytorch/data/Market-1501_Attribute/market_attribute.mat",
+                        "dataset_fn": "make_market_attribute",
+                        "kwargs":{"split": "train"}
+                    },
+                    "reid": {
+                        "source_file": "/home/pfeiffer/Projects/cupsizes/data/market1501_train.csv",
+                        "data_dir": "/globalwork/data/market1501/",
+                        "transform": {
+                            "height": 256,
+                            "width": 128,
+                            "transforms": ["resize", "RandomHorizontalFlip"]
+                        }
+                    },
+                    "type": "attribute_reid"
+                }
+            ]
+        },
+        "losses": {
+            "type": "UncertaintyLoss",
+            "name": "uncertainty",
+            "losses": [
+                {
+                    "type": "BatchHard",
+                    "endpoint" : "triplet",
+                    "dataset": "all",
+                    "name": "BatchHardAll",
+                    "margin": "soft",
+                    "log_sig_sq": 0.0
+                },
+                {
+                    "type": "Attribute",
+                    "endpoint" : ["gender", "hair", "up", "down", "clothes", "hat", "backpack", "bag", "handbag", "age", "upcolor", "downcolor"],
+                    "dataset": "all",
+                    "name": "AttributeAll",
+                    "weight": 1.0,
+                    "log_sig_sq": 0.0
+                },
+                {
+                    "type": "softmax",
+                    "endpoint" : "softmax",
+                    "target": "pid",
+                    "dataset": "all",
+                    "name": "id",
+                    "log_sig_sq": 0.0
+                }
+            ]
+        },
+        "scheduler": {
+            "preset": "huanghoujing",
+            "lr": 3e-4
+        },
+        "optimizer": {
+            "name": "adam"
+        }
+    }
+}
