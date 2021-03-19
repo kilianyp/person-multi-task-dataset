@@ -23,7 +23,7 @@ wrapt==1.10.11
 numpy==1.16.2
 h5py==2.9.0
 py_cpuinfo==4.0.0
-Pillow==5.4.1
+Pillow==8.1.1
 GitPython==2.1.11
 hashfs==0.7.1
 Mako==1.0.7
