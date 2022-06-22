@@ -20,7 +20,7 @@ matplotlib==2.1.0
 tensorflow_gpu==1.12.0
 colorama==0.4.0
 wrapt==1.10.11
-numpy==1.16.2
+numpy==1.22.0
 h5py==2.9.0
 py_cpuinfo==4.0.0
 Pillow==5.4.1
